@@ -6,12 +6,21 @@
 #include <FirebaseArduino.h>
 #define FIREBASE_HOST "beewatch-d4d0a.firebaseio.com"
 //#define FIREBASE_AUTH "token_or_secret"
+#define FIREBASE_AUTH "rTv3f4MOd0aV3F9RhMSJZjEFxKO1KObCogYbG6jS"
 #include <ArduinoJson.h>
+#include <SimpleTimer.h>
 
 #include "DHT.h"
 #define DHTPIN 4     // what digital pin we're connected to
 #define DHTTYPE DHT11   // DHT 11
+SimpleTimer timer;
 
+// --------------------- Variables for sound level measuring ---------
+// -------------------------------------------------------------------
+const int sampleWindow = 50; // Sample window width in mS (50 mS = 20Hz)
+unsigned int sample;
+double soundValue;
+// -------------------------------------------------------------------
 
 
 // Connect pin 1 (on the left) of the sensor to +5V
@@ -32,66 +41,99 @@ void setup() {
     // put your setup code here, to run once:
     Serial.begin(9600);
 
-    //WiFiManager
-    //Local intialization. Once its business is done, there is no need to keep it around
     WiFiManager wifiManager;
     //reset saved settings
-    //wifiManager.resetSettings();
-    
-    //set custom ip for portal
-    //wifiManager.setAPStaticIPConfig(IPAddress(10,0,1,1), IPAddress(10,0,1,1), IPAddress(255,255,255,0));
-
-    //fetches ssid and pass from eeprom and tries to connect
-    //if it does not connect it starts an access point with the specified name
-    //here  "AutoConnectAP"
-    //and goes into a blocking loop awaiting configuration
+   
     wifiManager.autoConnect("AutoConnectAP");
-    //or use this for auto generated name ESP + ChipID
-    //wifiManager.autoConnect();
-    
     
     //if you get here you have connected to the WiFi
     Serial.println("connected...yeey :)");
     Firebase.begin(FIREBASE_HOST);
     dht.begin();
+
+    // Wait a few seconds between measurements.
+    delay(1000);
+  
+    // Reading temperature or humidity takes about 250 milliseconds!
+    // Sensor readings may also be up to 2 seconds 'old' (its a very slow sensor)
+    float h = dht.readHumidity();
+    // Read temperature as Celsius (the default)
+    float t = dht.readTemperature();
+  
+    // Check if any reads failed and exit early (to try again).
+    if (isnan(h) || isnan(t)) {
+      Serial.println("Failed to read from DHT sensor!");
+      return;
+    }
+
+    
+    /**
+     * Based on code from Adafruit: 
+     * https://learn.adafruit.com/adafruit-microphone-amplifier-breakout/measuring-sound-levels
+     * Reads values from A0
+     */
+       unsigned long startMillis= millis();  // Start of sample window
+       unsigned int peakToPeak = 0;   // peak-to-peak level
+     
+       unsigned int signalMax = 0;
+       unsigned int signalMin = 1024;
+     
+       // collect data for 50 mS
+       while (millis() - startMillis < sampleWindow)
+       {
+          sample = analogRead(0);
+          if (sample < 1024)  // toss out spurious readings
+          {
+             if (sample > signalMax)
+             {
+                signalMax = sample;  // save just the max levels
+             }
+             else if (sample < signalMin)
+             {
+                signalMin = sample;  // save just the min levels
+             }
+          }
+       }
+       peakToPeak = signalMax - signalMin;  // max - min = peak-peak amplitude
+       
+       // Source to below code: https://forum.arduino.cc/index.php?topic=432991.0
+       double v = ((peakToPeak * 3.3) / 1024); //* 0.707;  // convert to volts
+       //double first = log10(volts/0.00631)*20; // The microphone sensitivity is -44 ±2 so V RMS / PA is 0.00631
+       //double second = first + 30; // Adjusted value to microphone sensitivity
+   
+    Serial.print("Humidity: ");
+    Serial.print(h);
+    Serial.print(" %\t");
+    Serial.print("Temperature: ");
+    Serial.print(t);
+    Serial.print(" *C ");
+    Serial.print("Sound: ");
+    Serial.print(v);
+    Serial.print(" V ");
+  
+  
+    StaticJsonBuffer<200> jsonBuffer;
+    JsonObject& sensorObject = jsonBuffer.createObject();
+    JsonObject& sensorTime = sensorObject.createNestedObject("timestamp");
+    sensorObject["temperature"] = t;
+    sensorObject["humidity"] = h;
+    sensorObject["sound"] = v;
+    sensorTime[".sv"] = "timestamp";
+          
+    // append a new value to /hives
+    Firebase.push("/hives/data", sensorObject);
+  
+    if (Firebase.failed()) {
+      Serial.print("pushing /temperature failed:");
+      Serial.println(Firebase.error());
+      return;
+    }
+
+    // Now let's go in deep sleep for 30 seconds:
+    ESP.deepSleep(30e6, WAKE_RF_DEFAULT); // 1st parameter is in µs!
+
 }
 
-void loop() {
-  // Wait a few seconds between measurements.
-  delay(2000);
 
-  // Reading temperature or humidity takes about 250 milliseconds!
-  // Sensor readings may also be up to 2 seconds 'old' (its a very slow sensor)
-  float h = dht.readHumidity();
-  // Read temperature as Celsius (the default)
-  float t = dht.readTemperature();
-
-  // Check if any reads failed and exit early (to try again).
-  if (isnan(h) || isnan(t)) {
-    Serial.println("Failed to read from DHT sensor!");
-    return;
-  }
-
-  Serial.print("Humidity: ");
-  Serial.print(h);
-  Serial.print(" %\t");
-  Serial.print("Temperature: ");
-  Serial.print(t);
-  Serial.print(" *C ");
-
-  StaticJsonBuffer<200> jsonBuffer;
-  JsonObject& sensorObject = jsonBuffer.createObject();
-  JsonObject& sensorTime = sensorObject.createNestedObject("timestamp");
-  sensorObject["temperature"] = t;
-  sensorObject["humidity"] = h;
-  sensorTime[".sv"] = "timestamp";
-        
-  // append a new value to /hives
-  Firebase.push("/hives/data", sensorObject);
-
-  if (Firebase.failed()) {
-    Serial.print("pushing /temperature failed:");
-    Serial.println(Firebase.error());
-    return;
-  }
+void loop() {  
 }
